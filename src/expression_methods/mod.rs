@@ -21,6 +21,10 @@ pub use self::global_expression_methods::{ExpressionMethods, NullableExpressionM
 #[doc(inline)]
 pub use self::text_expression_methods::TextExpressionMethods;
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "postgres_backend")]
 #[doc(inline)]
-pub use pg::expression::expression_methods::*;
+pub use crate::pg::expression::expression_methods::*;
+
+#[cfg(feature = "sqlite")]
+#[doc(inline)]
+pub use crate::sqlite::expression::expression_methods::*;

@@ -1,9 +1,13 @@
-use backend::Backend;
-use expression::subselect::Subselect;
-use expression::{AppearsOnTable, Expression, NonAggregate, SelectableExpression};
-use query_builder::*;
-use result::QueryResult;
-use sql_types::Bool;
+//! This module contains the query dsl node definition
+//! for `EXISTS` expressions
+
+use crate::backend::{sql_dialect, Backend, SqlDialect};
+use crate::expression::subselect::Subselect;
+use crate::expression::{AppearsOnTable, Expression, SelectableExpression, ValidGrouping};
+use crate::helper_types::exists;
+use crate::query_builder::*;
+use crate::result::QueryResult;
+use crate::sql_types::Bool;
 
 /// Creates a SQL `EXISTS` expression.
 ///
@@ -13,46 +17,73 @@ use sql_types::Bool;
 /// # Example
 ///
 /// ```rust
-/// # #[macro_use] extern crate diesel;
 /// # include!("../doctest_setup.rs");
 /// #
 /// # fn main() {
 /// #     use schema::users::dsl::*;
 /// #     use diesel::select;
 /// #     use diesel::dsl::exists;
-/// #     let connection = establish_connection();
+/// #     let connection = &mut establish_connection();
 /// let sean_exists = select(exists(users.filter(name.eq("Sean"))))
-///     .get_result(&connection);
+///     .get_result(connection);
 /// let jim_exists = select(exists(users.filter(name.eq("Jim"))))
-///     .get_result(&connection);
+///     .get_result(connection);
 /// assert_eq!(Ok(true), sean_exists);
 /// assert_eq!(Ok(false), jim_exists);
 /// # }
 /// ```
-pub fn exists<T>(query: T) -> Exists<T> {
-    Exists(Subselect::new(query))
+pub fn exists<T>(query: T) -> exists<T> {
+    Exists {
+        subselect: Subselect::new(query),
+    }
 }
 
-#[derive(Debug, Clone, Copy, QueryId)]
-pub struct Exists<T>(Subselect<T, ()>);
+/// The query dsl node that represents a SQL `EXISTS (subselect)` expression.
+///
+/// Third party backend can customize the [`QueryFragment`]
+/// implementation of this query dsl node via
+/// [`SqlDialect::ExistsSyntax`]. A customized implementation
+/// is expected to provide the same semantics as an ANSI SQL
+/// `EXIST (subselect)` expression.
+#[derive(Clone, Copy, QueryId, Debug)]
+#[non_exhaustive]
+pub struct Exists<T> {
+    /// The inner subselect
+    pub subselect: Subselect<T, Bool>,
+}
 
 impl<T> Expression for Exists<T>
 where
-    Subselect<T, ()>: Expression,
+    Subselect<T, Bool>: Expression,
 {
     type SqlType = Bool;
 }
 
-impl<T> NonAggregate for Exists<T> {}
+impl<T, GB> ValidGrouping<GB> for Exists<T>
+where
+    Subselect<T, Bool>: ValidGrouping<GB>,
+{
+    type IsAggregate = <Subselect<T, Bool> as ValidGrouping<GB>>::IsAggregate;
+}
 
 impl<T, DB> QueryFragment<DB> for Exists<T>
 where
     DB: Backend,
+    Self: QueryFragment<DB, DB::ExistsSyntax>,
+{
+    fn walk_ast<'b>(&'b self, pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        <Self as QueryFragment<DB, DB::ExistsSyntax>>::walk_ast(self, pass)
+    }
+}
+
+impl<T, DB> QueryFragment<DB, sql_dialect::exists_syntax::AnsiSqlExistsSyntax> for Exists<T>
+where
+    DB: Backend + SqlDialect<ExistsSyntax = sql_dialect::exists_syntax::AnsiSqlExistsSyntax>,
     T: QueryFragment<DB>,
 {
-    fn walk_ast(&self, mut out: AstPass<DB>) -> QueryResult<()> {
+    fn walk_ast<'b>(&'b self, mut out: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         out.push_sql("EXISTS (");
-        self.0.walk_ast(out.reborrow())?;
+        self.subselect.walk_ast(out.reborrow())?;
         out.push_sql(")");
         Ok(())
     }
@@ -61,13 +92,13 @@ where
 impl<T, QS> SelectableExpression<QS> for Exists<T>
 where
     Self: AppearsOnTable<QS>,
-    Subselect<T, ()>: SelectableExpression<QS>,
+    Subselect<T, Bool>: SelectableExpression<QS>,
 {
 }
 
 impl<T, QS> AppearsOnTable<QS> for Exists<T>
 where
     Self: Expression,
-    Subselect<T, ()>: AppearsOnTable<QS>,
+    Subselect<T, Bool>: AppearsOnTable<QS>,
 {
 }

@@ -1,9 +1,7 @@
+use super::{AstPass, QueryBuilder, QueryFragment};
+use crate::backend::Backend;
 use std::fmt::{self, Debug, Display};
 use std::marker::PhantomData;
-use std::mem;
-
-use super::{AstPass, QueryBuilder, QueryFragment};
-use backend::Backend;
 
 /// A struct that implements `fmt::Display` and `fmt::Debug` to show the SQL
 /// representation of a query.
@@ -14,9 +12,9 @@ use backend::Backend;
 ///
 /// See [`debug_query`] for usage examples.
 ///
-/// [`debug_query`]: ../fn.debug_query.html
+/// [`debug_query`]: crate::query_builder::debug_query()
 pub struct DebugQuery<'a, T: 'a, DB> {
-    query: &'a T,
+    pub(crate) query: &'a T,
     _marker: PhantomData<DB>,
 }
 
@@ -31,13 +29,15 @@ impl<'a, T, DB> DebugQuery<'a, T, DB> {
 
 impl<'a, T, DB> Display for DebugQuery<'a, T, DB>
 where
-    DB: Backend,
+    DB: Backend + Default,
     DB::QueryBuilder: Default,
     T: QueryFragment<DB>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut query_builder = DB::QueryBuilder::default();
-        QueryFragment::<DB>::to_sql(self.query, &mut query_builder).map_err(|_| fmt::Error)?;
+        let backend = DB::default();
+        QueryFragment::<DB>::to_sql(self.query, &mut query_builder, &backend)
+            .map_err(|_| fmt::Error)?;
         let debug_binds = DebugBinds::<_, DB>::new(self.query);
         write!(f, "{} -- binds: {:?}", query_builder.finish(), debug_binds)
     }
@@ -45,13 +45,15 @@ where
 
 impl<'a, T, DB> Debug for DebugQuery<'a, T, DB>
 where
-    DB: Backend,
+    DB: Backend + Default,
     DB::QueryBuilder: Default,
     T: QueryFragment<DB>,
 {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut query_builder = DB::QueryBuilder::default();
-        QueryFragment::<DB>::to_sql(self.query, &mut query_builder).map_err(|_| fmt::Error)?;
+        let backend = DB::default();
+        QueryFragment::<DB>::to_sql(self.query, &mut query_builder, &backend)
+            .map_err(|_| fmt::Error)?;
         let debug_binds = DebugBinds::<_, DB>::new(self.query);
         f.debug_struct("Query")
             .field("sql", &query_builder.finish())
@@ -62,7 +64,7 @@ where
 
 /// A struct that implements `fmt::Debug` by walking the given AST and writing
 /// the `fmt::Debug` implementation of each bind parameter.
-pub struct DebugBinds<'a, T: 'a, DB> {
+pub(crate) struct DebugBinds<'a, T: 'a, DB> {
     query: &'a T,
     _marker: PhantomData<DB>,
 }
@@ -78,19 +80,18 @@ impl<'a, T, DB> DebugBinds<'a, T, DB> {
 
 impl<'a, T, DB> Debug for DebugBinds<'a, T, DB>
 where
-    DB: Backend,
+    DB: Backend + Default,
     T: QueryFragment<DB>,
 {
-    // Clippy is wrong, this cannot be expressed with pointer casting
-    #[allow(clippy::transmute_ptr_to_ptr)]
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let backend = DB::default();
+        let mut buffer = Vec::new();
+        let ast_pass = AstPass::debug_binds(&mut buffer, &backend);
+        self.query.walk_ast(ast_pass).map_err(|_| fmt::Error)?;
+
         let mut list = f.debug_list();
-        {
-            // Safe because the lifetime is shortened to one smaller
-            // than the lifetime of the formatter.
-            let list_with_shorter_lifetime = unsafe { mem::transmute(&mut list) };
-            let ast_pass = AstPass::debug_binds(list_with_shorter_lifetime);
-            self.query.walk_ast(ast_pass).map_err(|_| fmt::Error)?;
+        for entry in buffer {
+            list.entry(&entry);
         }
         list.finish()?;
         Ok(())

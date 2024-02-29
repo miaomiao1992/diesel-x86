@@ -1,5 +1,3 @@
-#![cfg_attr(rustfmt, rustfmt_skip)] // https://github.com/rust-lang-nursery/rustfmt/issues/2755
-
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __diesel_operator_body {
@@ -7,17 +5,17 @@ macro_rules! __diesel_operator_body {
         notation = $notation:ident,
         struct_name = $name:ident,
         operator = $operator:expr,
-        return_ty = ReturnBasedOnArgs,
+        return_ty = (ReturnBasedOnArgs),
         ty_params = ($($ty_param:ident,)+),
         field_names = $field_names:tt,
         backend_ty_params = $backend_ty_params:tt,
         backend_ty = $backend_ty:ty,
     ) => {
-        __diesel_operator_body! {
+        $crate::__diesel_operator_body! {
             notation = $notation,
             struct_name = $name,
             operator = $operator,
-            return_ty = ST,
+            return_ty = (ST),
             ty_params = ($($ty_param,)+),
             field_names = $field_names,
             backend_ty_params = $backend_ty_params,
@@ -31,17 +29,17 @@ macro_rules! __diesel_operator_body {
         notation = $notation:ident,
         struct_name = $name:ident,
         operator = $operator:expr,
-        return_ty = $return_ty:ty,
+        return_ty = ($($return_ty:tt)+),
         ty_params = ($($ty_param:ident,)+),
         field_names = $field_names:tt,
         backend_ty_params = $backend_ty_params:tt,
         backend_ty = $backend_ty:ty,
     ) => {
-        __diesel_operator_body! {
+        $crate::__diesel_operator_body! {
             notation = $notation,
             struct_name = $name,
             operator = $operator,
-            return_ty = $return_ty,
+            return_ty = ($($return_ty)*),
             ty_params = ($($ty_param,)+),
             field_names = $field_names,
             backend_ty_params = $backend_ty_params,
@@ -55,7 +53,7 @@ macro_rules! __diesel_operator_body {
         notation = $notation:ident,
         struct_name = $name:ident,
         operator = $operator:expr,
-        return_ty = $return_ty:ty,
+        return_ty = ($($return_ty:tt)+),
         ty_params = ($($ty_param:ident,)+),
         field_names = ($($field_name:ident,)+),
         backend_ty_params = ($($backend_ty_param:ident,)*),
@@ -63,29 +61,31 @@ macro_rules! __diesel_operator_body {
         expression_ty_params = ($($expression_ty_params:ident,)*),
         expression_bounds = ($($expression_bounds:tt)*),
     ) => {
-        #[derive(Debug, Clone, Copy, QueryId, DieselNumericOps)]
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            $crate::query_builder::QueryId,
+            $crate::sql_types::DieselNumericOps,
+            $crate::expression::ValidGrouping
+        )]
         #[doc(hidden)]
         pub struct $name<$($ty_param,)+> {
             $(pub(crate) $field_name: $ty_param,)+
         }
 
         impl<$($ty_param,)+> $name<$($ty_param,)+> {
-            pub fn new($($field_name: $ty_param,)+) -> Self {
+            pub(crate) fn new($($field_name: $ty_param,)+) -> Self {
                 $name { $($field_name,)+ }
             }
         }
 
-        impl_selectable_expression!($name<$($ty_param),+>);
+        $crate::impl_selectable_expression!($name<$($ty_param),+>);
 
         impl<$($ty_param,)+ $($expression_ty_params,)*> $crate::expression::Expression for $name<$($ty_param,)+> where
             $($expression_bounds)*
         {
-            type SqlType = $return_ty;
-        }
-
-        impl<$($ty_param,)+> $crate::expression::NonAggregate for $name<$($ty_param,)+> where
-            $($ty_param: $crate::expression::NonAggregate,)+
-        {
+            type SqlType = $($return_ty)*;
         }
 
         impl<$($ty_param,)+ $($backend_ty_param,)*> $crate::query_builder::QueryFragment<$backend_ty>
@@ -93,13 +93,32 @@ macro_rules! __diesel_operator_body {
                 $($ty_param: $crate::query_builder::QueryFragment<$backend_ty>,)+
                 $($backend_ty_param: $crate::backend::Backend,)*
         {
-            fn walk_ast(&self, mut out: $crate::query_builder::AstPass<$backend_ty>) -> $crate::result::QueryResult<()> {
-                __diesel_operator_to_sql!(
+            fn walk_ast<'b>(
+                &'b self,
+                mut out: $crate::query_builder::AstPass<'_, 'b, $backend_ty>
+            ) -> $crate::result::QueryResult<()>
+            {
+                $crate::__diesel_operator_to_sql!(
                     notation = $notation,
                     operator_expr = out.push_sql($operator),
                     field_exprs = ($(self.$field_name.walk_ast(out.reborrow())?),+),
                 );
                 Ok(())
+            }
+        }
+
+        impl<S, $($ty_param,)+> $crate::internal::operators_macro::FieldAliasMapper<S> for $name<$($ty_param,)+>
+        where
+            S: $crate::query_source::AliasSource,
+            $($ty_param: $crate::internal::operators_macro::FieldAliasMapper<S>,)+
+        {
+            type Out = $name<
+                $(<$ty_param as $crate::internal::operators_macro::FieldAliasMapper<S>>::Out,)+
+            >;
+            fn map(self, alias: &$crate::query_source::Alias<S>) -> Self::Out {
+                $name {
+                    $($field_name: self.$field_name.map(alias),)+
+                }
             }
         }
     }
@@ -165,111 +184,230 @@ macro_rules! __diesel_operator_to_sql {
 ///
 /// ```ignore
 /// // The SQL type will be boolean. The backend will not be constrained
-/// diesel_infix_operator!(Matches, " @@ ");
+/// infix_operator!(Matches, " @@ ");
 ///
 /// // Queries which try to execute `Contains` on a backend other than Pg
 /// // will fail to compile
-/// diesel_infix_operator!(Contains, " @> ", backend: Pg);
+/// infix_operator!(Contains, " @> ", backend: Pg);
 ///
 /// // The type of `Concat` will be `TsVector` rather than Bool
-/// diesel_infix_operator!(Concat, " || ", TsVector);
+/// infix_operator!(Concat, " || ", TsVector);
 ///
 /// // It is perfectly fine to have multiple operators with the same SQL.
 /// // Diesel will ensure that the queries are always unambiguous in which
 /// // operator applies
-/// diesel_infix_operator!(Or, " || ", TsQuery);
+/// infix_operator!(Or, " || ", TsQuery);
 ///
 /// // Specifying both the return types and the backend
-/// diesel_infix_operator!(And, " && ", TsQuery, backend: Pg);
+/// infix_operator!(And, " && ", TsQuery, backend: Pg);
 /// ```
 ///
 /// ## Example usage
 ///
 /// ```rust
-/// # #[macro_use] extern crate diesel;
 /// # include!("../doctest_setup.rs");
+/// # use diesel::sql_types::SqlType;
+/// # use diesel::expression::TypedExpressionType;
 /// #
 /// # fn main() {
 /// #     use schema::users::dsl::*;
-/// #     let connection = establish_connection();
-/// diesel_infix_operator!(MyEq, " = ");
+/// #     let connection = &mut establish_connection();
+/// diesel::infix_operator!(MyEq, " = ");
 ///
 /// use diesel::expression::AsExpression;
 ///
 /// // Normally you would put this on a trait instead
-/// fn my_eq<T, U>(left: T, right: U) -> MyEq<T, U::Expression> where
-///     T: Expression,
-///     U: AsExpression<T::SqlType>,
+/// fn my_eq<T, U, ST>(left: T, right: U) -> MyEq<T, U::Expression> where
+///     T: Expression<SqlType = ST>,
+///     U: AsExpression<ST>,
+///     ST: SqlType + TypedExpressionType,
 /// {
 ///     MyEq::new(left, right.as_expression())
 /// }
 ///
 /// let users_with_name = users.select(id).filter(my_eq(name, "Sean"));
 ///
-/// assert_eq!(Ok(1), users_with_name.first(&connection));
+/// assert_eq!(Ok(1), users_with_name.first(connection));
 /// # }
 /// ```
 #[macro_export]
-macro_rules! diesel_infix_operator {
+macro_rules! infix_operator {
     ($name:ident, $operator:expr) => {
-        diesel_infix_operator!($name, $operator, $crate::sql_types::Bool);
+        $crate::infix_operator!($name, $operator, $crate::sql_types::Bool);
     };
 
     ($name:ident, $operator:expr, backend: $backend:ty) => {
-        diesel_infix_operator!($name, $operator, $crate::sql_types::Bool, backend: $backend);
+        $crate::infix_operator!($name, $operator, $crate::sql_types::Bool, backend: $backend);
     };
 
     ($name:ident, $operator:expr, $($return_ty:tt)::*) => {
-        __diesel_operator_body!(
-            notation = infix,
-            struct_name = $name,
+        $crate::__diesel_infix_operator!(
+            name = $name,
             operator = $operator,
-            return_ty = $($return_ty)::*,
-            ty_params = (T, U,),
-            field_names = (left, right,),
+            return_ty = NullableBasedOnArgs ($($return_ty)::*),
             backend_ty_params = (DB,),
             backend_ty = DB,
         );
     };
 
-    ($name:ident, $operator:expr, $return_ty:ty, backend: $backend:ty) => {
-        __diesel_operator_body!(
-            notation = infix,
-            struct_name = $name,
+    ($name:ident, $operator:expr, $($return_ty:tt)::*, backend: $backend:ty) => {
+        $crate::__diesel_infix_operator!(
+            name = $name,
             operator = $operator,
-            return_ty = $return_ty,
-            ty_params = (T, U,),
-            field_names = (left, right,),
+            return_ty = NullableBasedOnArgs ($($return_ty)::*),
             backend_ty_params = (),
             backend_ty = $backend,
         );
     };
+
+}
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __diesel_infix_operator {
+    ($name:ident, $operator:expr, ConstantNullability $($return_ty:tt)::*) => {
+        $crate::__diesel_infix_operator!(
+            name = $name,
+            operator = $operator,
+            return_ty = ($($return_ty)::*),
+            backend_ty_params = (DB,),
+            backend_ty = DB,
+        );
+    };
+    ($name:ident, $operator:expr, __diesel_internal_SameResultAsInput, backend: $backend:ty) => {
+        $crate::__diesel_infix_operator!(
+            name = $name,
+            operator = $operator,
+            return_ty = (<T as $crate::expression::Expression>::SqlType),
+            backend_ty_params = (),
+            backend_ty = $backend,
+        );
+    };
+    ($name:ident, $operator:expr, ConstantNullability $($return_ty:tt)::*, backend: $backend:ty) => {
+        $crate::__diesel_infix_operator!(
+            name = $name,
+            operator = $operator,
+            return_ty = ($($return_ty)::*),
+            backend_ty_params = (),
+            backend_ty = $backend,
+        );
+    };
+
+    (
+        name = $name:ident,
+        operator = $operator:expr,
+        return_ty = NullableBasedOnArgs ($($return_ty:tt)+),
+        backend_ty_params = $backend_ty_params:tt,
+        backend_ty = $backend_ty:ty,
+    ) => {
+        $crate::__diesel_infix_operator!(
+            name = $name,
+            operator = $operator,
+            return_ty = (
+                $crate::sql_types::is_nullable::MaybeNullable<
+                    $crate::sql_types::is_nullable::IsOneNullable<
+                        <T as $crate::expression::Expression>::SqlType,
+                        <U as $crate::expression::Expression>::SqlType
+                    >,
+                    $($return_ty)+
+                >
+            ),
+            expression_bounds = (
+                $crate::sql_types::is_nullable::IsSqlTypeNullable<
+                    <T as $crate::expression::Expression>::SqlType
+                >: $crate::sql_types::OneIsNullable<
+                    $crate::sql_types::is_nullable::IsSqlTypeNullable<
+                        <U as $crate::expression::Expression>::SqlType
+                    >
+                >,
+                $crate::sql_types::is_nullable::IsOneNullable<
+                    <T as $crate::expression::Expression>::SqlType,
+                    <U as $crate::expression::Expression>::SqlType
+                >: $crate::sql_types::MaybeNullableType<$($return_ty)+>,
+            ),
+            backend_ty_params = $backend_ty_params,
+            backend_ty = $backend_ty,
+        );
+    };
+
+    (
+        name = $name:ident,
+        operator = $operator:expr,
+        return_ty = ($($return_ty:tt)+),
+        backend_ty_params = $backend_ty_params:tt,
+        backend_ty = $backend_ty:ty,
+    ) => {
+        $crate::__diesel_infix_operator!(
+            name = $name,
+            operator = $operator,
+            return_ty = ($($return_ty)+),
+            expression_bounds = (),
+            backend_ty_params = $backend_ty_params,
+            backend_ty = $backend_ty,
+        );
+    };
+
+    (
+        name = $name:ident,
+        operator = $operator:expr,
+        return_ty = ($($return_ty:tt)+),
+        expression_bounds = ($($expression_bounds:tt)*),
+        backend_ty_params = $backend_ty_params:tt,
+        backend_ty = $backend_ty:ty,
+    ) => {
+        $crate::__diesel_operator_body!(
+            notation = infix,
+            struct_name = $name,
+            operator = $operator,
+            return_ty = ($($return_ty)+),
+            ty_params = (T, U,),
+            field_names = (left, right,),
+            backend_ty_params = $backend_ty_params,
+            backend_ty = $backend_ty,
+            expression_ty_params = (),
+            expression_bounds = (
+                T: $crate::expression::Expression,
+                U: $crate::expression::Expression,
+                <T as $crate::expression::Expression>::SqlType: $crate::sql_types::SqlType,
+                <U as $crate::expression::Expression>::SqlType: $crate::sql_types::SqlType,
+                $($expression_bounds)*
+            ),
+        );
+    };
+}
+
+#[macro_export]
+#[deprecated(since = "2.0.0", note = "use `diesel::infix_operator!` instead")]
+#[cfg(all(feature = "with-deprecated", not(feature = "without-deprecated")))]
+#[doc(hidden)]
+macro_rules! diesel_infix_operator {
+    ($($args:tt)*) => {
+        $crate::infix_operator!($($args)*);
+    }
 }
 
 /// Useful for libraries adding support for new SQL types. Apps should never
 /// need to call this.
 ///
-/// Similar to [`diesel_infix_operator!`], but the generated type will only take
+/// Similar to [`infix_operator!`], but the generated type will only take
 /// a single argument rather than two. The operator SQL will be placed after
-/// the single argument. See [`diesel_infix_operator!`] for example usage.
+/// the single argument. See [`infix_operator!`] for example usage.
 ///
-/// [`diesel_infix_operator!`]: macro.diesel_infix_operator.html
 #[macro_export]
-macro_rules! diesel_postfix_operator {
+macro_rules! postfix_operator {
     ($name:ident, $operator:expr) => {
-        diesel_postfix_operator!($name, $operator, $crate::sql_types::Bool);
+        $crate::postfix_operator!($name, $operator, $crate::sql_types::Bool);
     };
 
     ($name:ident, $operator:expr, backend: $backend:ty) => {
-        diesel_postfix_operator!($name, $operator, $crate::sql_types::Bool, backend: $backend);
+        $crate::postfix_operator!($name, $operator, $crate::sql_types::Bool, backend: $backend);
     };
 
     ($name:ident, $operator:expr, $return_ty:ty) => {
-        __diesel_operator_body!(
+        $crate::__diesel_operator_body!(
             notation = postfix,
             struct_name = $name,
             operator = $operator,
-            return_ty = $return_ty,
+            return_ty = ($return_ty),
             ty_params = (Expr,),
             field_names = (expr,),
             backend_ty_params = (DB,),
@@ -278,89 +416,148 @@ macro_rules! diesel_postfix_operator {
     };
 
     ($name:ident, $operator:expr, $return_ty:ty, backend: $backend:ty) => {
-        __diesel_operator_body!(
+        $crate::__diesel_operator_body!(
             notation = postfix,
             struct_name = $name,
             operator = $operator,
-            return_ty = $return_ty,
+            return_ty = ($return_ty),
             ty_params = (Expr,),
             field_names = (expr,),
             backend_ty_params = (),
             backend_ty = $backend,
         );
     };
+}
+
+#[macro_export]
+#[deprecated(since = "2.0.0", note = "use `diesel::postfix_operator!` instead")]
+#[cfg(all(feature = "with-deprecated", not(feature = "without-deprecated")))]
+#[doc(hidden)]
+macro_rules! diesel_postfix_operator {
+    ($($args:tt)*) => {
+        $crate::postfix_operator!($($args)*);
+    }
 }
 
 /// Useful for libraries adding support for new SQL types. Apps should never
 /// need to call this.
 ///
-/// Similar to [`diesel_infix_operator!`], but the generated type will only take
+/// Similar to [`infix_operator!`], but the generated type will only take
 /// a single argument rather than two. The operator SQL will be placed before
-/// the single argument. See [`diesel_infix_operator!`] for example usage.
+/// the single argument. See [`infix_operator!`] for example usage.
 ///
-/// [`diesel_infix_operator!`]: macro.diesel_infix_operator.html
 #[macro_export]
-macro_rules! diesel_prefix_operator {
+macro_rules! prefix_operator {
     ($name:ident, $operator:expr) => {
-        diesel_prefix_operator!($name, $operator, $crate::sql_types::Bool);
+        $crate::prefix_operator!($name, $operator, $crate::sql_types::Bool);
     };
 
     ($name:ident, $operator:expr, backend: $backend:ty) => {
-        diesel_prefix_operator!($name, $operator, $crate::sql_types::Bool, backend: $backend);
+        $crate::prefix_operator!($name, $operator, $crate::sql_types::Bool, backend: $backend);
     };
 
     ($name:ident, $operator:expr, $return_ty:ty) => {
-        __diesel_operator_body!(
+        $crate::__diesel_operator_body!(
             notation = prefix,
             struct_name = $name,
             operator = $operator,
-            return_ty = $return_ty,
+            return_ty = (
+                $crate::sql_types::is_nullable::MaybeNullable<
+                    $crate::sql_types::is_nullable::IsSqlTypeNullable<
+                        <Expr as $crate::expression::Expression>::SqlType
+                    >,
+                    $return_ty,
+                >
+            ),
             ty_params = (Expr,),
             field_names = (expr,),
             backend_ty_params = (DB,),
             backend_ty = DB,
+            expression_ty_params = (),
+            expression_bounds = (
+                Expr: $crate::expression::Expression,
+                <Expr as $crate::expression::Expression>::SqlType: $crate::sql_types::SqlType,
+                $crate::sql_types::is_nullable::IsSqlTypeNullable<
+                    <Expr as $crate::expression::Expression>::SqlType
+                >: $crate::sql_types::MaybeNullableType<$return_ty>,
+            ),
         );
     };
 
     ($name:ident, $operator:expr, $return_ty:ty, backend: $backend:ty) => {
-        __diesel_operator_body!(
+        $crate::__diesel_operator_body!(
             notation = prefix,
             struct_name = $name,
             operator = $operator,
-            return_ty = $return_ty,
+            return_ty = (
+                $crate::sql_types::is_nullable::MaybeNullable<
+                    $crate::sql_types::is_nullable::IsSqlTypeNullable<
+                        <Expr as $crate::expression::Expression>::SqlType
+                    >,
+                    $return_ty,
+                >
+            ),
             ty_params = (Expr,),
             field_names = (expr,),
             backend_ty_params = (),
             backend_ty = $backend,
+            expression_ty_params = (),
+            expression_bounds = (
+                Expr: $crate::expression::Expression,
+                <Expr as $crate::expression::Expression>::SqlType: $crate::sql_types::SqlType,
+                $crate::sql_types::is_nullable::IsSqlTypeNullable<
+                    <Expr as $crate::expression::Expression>::SqlType
+                >: $crate::sql_types::MaybeNullableType<$return_ty>,
+            ),
         );
     };
 }
 
-diesel_infix_operator!(Concat, " || ", ReturnBasedOnArgs);
-diesel_infix_operator!(And, " AND ");
-diesel_infix_operator!(Between, " BETWEEN ");
-diesel_infix_operator!(Escape, " ESCAPE ");
-diesel_infix_operator!(Eq, " = ");
-diesel_infix_operator!(Gt, " > ");
-diesel_infix_operator!(GtEq, " >= ");
-diesel_infix_operator!(Like, " LIKE ");
-diesel_infix_operator!(Lt, " < ");
-diesel_infix_operator!(LtEq, " <= ");
-diesel_infix_operator!(NotBetween, " NOT BETWEEN ");
-diesel_infix_operator!(NotEq, " != ");
-diesel_infix_operator!(NotLike, " NOT LIKE ");
-diesel_infix_operator!(Or, " OR ");
+#[macro_export]
+#[deprecated(since = "2.0.0", note = "use `diesel::prefix_operator!` instead")]
+#[cfg(all(feature = "with-deprecated", not(feature = "without-deprecated")))]
+#[doc(hidden)]
+macro_rules! diesel_prefix_operator {
+    ($($args:tt)*) => {
+        $crate::prefix_operator!($($args)*);
+    }
+}
 
-diesel_postfix_operator!(IsNull, " IS NULL");
-diesel_postfix_operator!(IsNotNull, " IS NOT NULL");
-diesel_postfix_operator!(Asc, " ASC", ());
-diesel_postfix_operator!(Desc, " DESC", ());
+infix_operator!(And, " AND ");
+infix_operator!(Or, " OR ");
+infix_operator!(Escape, " ESCAPE ");
+infix_operator!(Eq, " = ");
+infix_operator!(Gt, " > ");
+infix_operator!(GtEq, " >= ");
+infix_operator!(Like, " LIKE ");
+infix_operator!(Lt, " < ");
+infix_operator!(LtEq, " <= ");
+infix_operator!(NotEq, " != ");
+infix_operator!(NotLike, " NOT LIKE ");
+infix_operator!(Between, " BETWEEN ");
+infix_operator!(NotBetween, " NOT BETWEEN ");
 
-diesel_prefix_operator!(Not, "NOT ");
+postfix_operator!(IsNull, " IS NULL");
+postfix_operator!(IsNotNull, " IS NOT NULL");
+postfix_operator!(
+    Asc,
+    " ASC ",
+    crate::expression::expression_types::NotSelectable
+);
+postfix_operator!(
+    Desc,
+    " DESC ",
+    crate::expression::expression_types::NotSelectable
+);
 
-use insertable::{ColumnInsertValue, Insertable};
-use query_builder::ValuesClause;
-use query_source::Column;
+prefix_operator!(Not, " NOT ");
+
+use crate::backend::{sql_dialect, Backend, SqlDialect};
+use crate::expression::{TypedExpressionType, ValidGrouping};
+use crate::insertable::{ColumnInsertValue, Insertable};
+use crate::query_builder::{QueryFragment, QueryId, ValuesClause};
+use crate::query_source::Column;
+use crate::sql_types::{DieselNumericOps, SqlType};
 
 impl<T, U> Insertable<T::Table> for Eq<T, U>
 where
@@ -369,7 +566,7 @@ where
     type Values = ValuesClause<ColumnInsertValue<T, U>, T::Table>;
 
     fn values(self) -> Self::Values {
-        ValuesClause::new(ColumnInsertValue::Expression(self.left, self.right))
+        ValuesClause::new(ColumnInsertValue::new(self.right))
     }
 }
 
@@ -382,5 +579,69 @@ where
 
     fn values(self) -> Self::Values {
         Eq::new(self.left, &self.right).values()
+    }
+}
+
+/// This type represents a string concat operator
+#[diesel_derives::__diesel_public_if(
+    feature = "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
+    public_fields(left, right)
+)]
+#[derive(Debug, Clone, Copy, QueryId, DieselNumericOps, ValidGrouping)]
+pub struct Concat<L, R> {
+    /// The left side expression of the operator
+    pub(crate) left: L,
+    /// The right side expression of the operator
+    pub(crate) right: R,
+}
+
+impl<L, R> Concat<L, R> {
+    pub(crate) fn new(left: L, right: R) -> Self {
+        Self { left, right }
+    }
+}
+
+impl<L, R, ST> crate::expression::Expression for Concat<L, R>
+where
+    L: crate::expression::Expression<SqlType = ST>,
+    R: crate::expression::Expression<SqlType = ST>,
+    ST: SqlType + TypedExpressionType,
+{
+    type SqlType = ST;
+}
+
+impl_selectable_expression!(Concat<L, R>);
+
+impl<L, R, DB> QueryFragment<DB> for Concat<L, R>
+where
+    DB: Backend,
+    Self: QueryFragment<DB, DB::ConcatClause>,
+{
+    fn walk_ast<'b>(
+        &'b self,
+        pass: crate::query_builder::AstPass<'_, 'b, DB>,
+    ) -> crate::result::QueryResult<()> {
+        <Self as QueryFragment<DB, DB::ConcatClause>>::walk_ast(self, pass)
+    }
+}
+
+impl<L, R, DB> QueryFragment<DB, sql_dialect::concat_clause::ConcatWithPipesClause> for Concat<L, R>
+where
+    L: QueryFragment<DB>,
+    R: QueryFragment<DB>,
+    DB: Backend + SqlDialect<ConcatClause = sql_dialect::concat_clause::ConcatWithPipesClause>,
+{
+    fn walk_ast<'b>(
+        &'b self,
+        mut out: crate::query_builder::AstPass<'_, 'b, DB>,
+    ) -> crate::result::QueryResult<()> {
+        // Since popular MySQL scalability layer Vitess does not support pipes in query parsing
+        // CONCAT has been implemented separately for MySQL (see MysqlConcatClause)
+        out.push_sql("(");
+        self.left.walk_ast(out.reborrow())?;
+        out.push_sql(" || ");
+        self.right.walk_ast(out.reborrow())?;
+        out.push_sql(")");
+        Ok(())
     }
 }

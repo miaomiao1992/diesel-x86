@@ -1,6 +1,6 @@
-extern crate dotenv;
+extern crate dotenvy;
 
-use prelude::*;
+use crate::prelude::*;
 
 cfg_if! {
     if #[cfg(feature = "sqlite")] {
@@ -27,7 +27,7 @@ cfg_if! {
         pub type TestConnection = MysqlConnection;
 
         pub fn connection() -> TestConnection {
-            let conn = connection_no_transaction();
+            let mut conn = connection_no_transaction();
             conn.begin_test_transaction().unwrap();
             conn
         }
@@ -37,8 +37,8 @@ cfg_if! {
         }
 
         pub fn database_url() -> String {
-            dotenv::var("MYSQL_UNIT_TEST_DATABASE_URL")
-                .or_else(|_| dotenv::var("DATABASE_URL"))
+            dotenvy::var("MYSQL_UNIT_TEST_DATABASE_URL")
+                .or_else(|_| dotenvy::var("DATABASE_URL"))
                 .expect("DATABASE_URL must be set in order to run tests")
         }
     } else {
@@ -53,7 +53,7 @@ cfg_if! {
 
 #[cfg(feature = "postgres")]
 pub fn pg_connection() -> PgConnection {
-    let conn = pg_connection_no_transaction();
+    let mut conn = pg_connection_no_transaction();
     conn.begin_test_transaction().unwrap();
     conn
 }
@@ -65,7 +65,7 @@ pub fn pg_connection_no_transaction() -> PgConnection {
 
 #[cfg(feature = "postgres")]
 pub fn pg_database_url() -> String {
-    dotenv::var("PG_DATABASE_URL")
-        .or_else(|_| dotenv::var("DATABASE_URL"))
+    dotenvy::var("PG_DATABASE_URL")
+        .or_else(|_| dotenvy::var("DATABASE_URL"))
         .expect("DATABASE_URL must be set in order to run tests")
 }

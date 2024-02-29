@@ -1,7 +1,10 @@
 mod date_and_time;
 mod decimal;
-pub mod floats;
-mod integers;
-pub mod option;
+#[cfg(all(
+    feature = "serde_json",
+    any(feature = "postgres_backend", feature = "mysql_backend")
+))]
+mod json;
+mod option;
 mod primitives;
-mod tuples;
+pub(crate) mod tuples;

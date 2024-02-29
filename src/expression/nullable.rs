@@ -1,15 +1,17 @@
-use backend::Backend;
-use expression::*;
-use query_builder::*;
-use query_source::Table;
-use result::QueryResult;
-use sql_types::IntoNullable;
+use crate::backend::{Backend, DieselReserveSpecialization};
+use crate::expression::TypedExpressionType;
+use crate::expression::*;
+use crate::query_builder::*;
+use crate::query_source::joins::ToInnerJoin;
+use crate::result::QueryResult;
+use crate::sql_types::{DieselNumericOps, IntoNullable};
 
-#[derive(Debug, Copy, Clone, DieselNumericOps)]
-pub struct Nullable<T>(T);
+#[doc(hidden)] // This is used by the `table!` macro internally
+#[derive(Debug, Copy, Clone, DieselNumericOps, ValidGrouping)]
+pub struct Nullable<T>(pub(crate) T);
 
 impl<T> Nullable<T> {
-    pub fn new(expr: T) -> Self {
+    pub(crate) fn new(expr: T) -> Self {
         Nullable(expr)
     }
 }
@@ -17,23 +19,22 @@ impl<T> Nullable<T> {
 impl<T> Expression for Nullable<T>
 where
     T: Expression,
-    <T as Expression>::SqlType: IntoNullable,
+    T::SqlType: IntoNullable,
+    <T::SqlType as IntoNullable>::Nullable: TypedExpressionType,
 {
-    type SqlType = <<T as Expression>::SqlType as IntoNullable>::Nullable;
+    type SqlType = <T::SqlType as IntoNullable>::Nullable;
 }
 
 impl<T, DB> QueryFragment<DB> for Nullable<T>
 where
-    DB: Backend,
+    DB: Backend + DieselReserveSpecialization,
     T: QueryFragment<DB>,
 {
-    fn walk_ast(&self, pass: AstPass<DB>) -> QueryResult<()> {
+    fn walk_ast<'b>(&'b self, pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         self.0.walk_ast(pass)
     }
 }
 
-/// Nullable can be used in where clauses everywhere, but can only be used in
-/// select clauses for outer joins.
 impl<T, QS> AppearsOnTable<QS> for Nullable<T>
 where
     T: AppearsOnTable<QS>,
@@ -47,17 +48,12 @@ impl<T: QueryId> QueryId for Nullable<T> {
     const HAS_STATIC_QUERY_ID: bool = T::HAS_STATIC_QUERY_ID;
 }
 
-impl<T> NonAggregate for Nullable<T>
-where
-    T: NonAggregate,
-    Nullable<T>: Expression,
-{
-}
-
 impl<T, QS> SelectableExpression<QS> for Nullable<T>
 where
     Self: AppearsOnTable<QS>,
-    T: SelectableExpression<QS>,
-    QS: Table,
+    QS: ToInnerJoin,
+    T: SelectableExpression<QS::InnerJoin>,
 {
 }
+
+impl<T> SelectableExpression<NoFromClause> for Nullable<T> where Self: AppearsOnTable<NoFromClause> {}
